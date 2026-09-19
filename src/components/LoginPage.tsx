@@ -197,7 +197,7 @@ export const LoginPage: React.FC = () => {
                   <span className="text-cyber-primary">TRANSPORT: {joinDiagnostics.transport}</span>
                 </div>
                 <div className="grid grid-cols-2 gap-x-2 gap-y-1 pt-1 text-[10px]">
-                  <div>Backend: <span className="text-cyber-text">{joinDiagnostics.supabaseConfigured ? `SUPABASE (${joinDiagnostics.supabaseHost})` : 'LOCAL DEV RELAY'}</span></div>
+                  <div>Backend: <span className="text-cyber-text">{joinDiagnostics.supabaseConfigured ? `SUPABASE (${joinDiagnostics.supabaseHost})` : joinDiagnostics.transport === 'UNCONFIGURED_PRODUCTION' ? 'UNCONFIGURED (MISSING SUPABASE ENV)' : 'LOCAL DEV RELAY'}</span></div>
                   <div>Room Lookup: <span className={joinDiagnostics.roomFound ? 'text-cyber-primary font-bold' : 'text-cyber-error font-bold'}>{joinDiagnostics.roomFound ? '[✓] FOUND' : '[✗] NOT FOUND'}</span></div>
                   <div>Guest Verifier: <span className={joinDiagnostics.guestVerifierPresent ? 'text-cyber-primary' : 'text-cyber-muted'}>{joinDiagnostics.guestVerifierPresent ? '[✓] PRESENT' : '[✗] NONE'}</span></div>
                   <div>Session Salt: <span className={joinDiagnostics.sessionSaltPresent ? 'text-cyber-primary' : 'text-cyber-muted'}>{joinDiagnostics.sessionSaltPresent ? '[✓] PRESENT' : '[✗] NONE'}</span></div>

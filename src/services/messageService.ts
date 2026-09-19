@@ -2,7 +2,13 @@
  * NEXUS REALTIME ENCRYPTED MESSAGE SERVICE
  */
 
-import { supabase, isSupabaseConfigured, localPeerHub, localRelayApi } from '../lib/supabaseClient';
+import {
+  supabase,
+  isSupabaseConfigured,
+  isLocalEnvironment,
+  localPeerHub,
+  localRelayApi,
+} from '../lib/supabaseClient';
 import { encryptMessage, decryptMessage } from '../crypto/encryption';
 import { encodeVisualCipher } from '../crypto/visualCipher';
 
@@ -76,11 +82,16 @@ export async function sendEncryptedMessage(
     const { error } = await supabase.from('messages').insert([record]);
     if (error) {
       console.error('Failed to persist encrypted message to Supabase:', error);
+      throw new Error(`DATABASE ERROR // Failed to persist message: ${error.message}`);
     }
+  } else if (!isLocalEnvironment) {
+    throw new Error('NEXUS CONFIGURATION ERROR // Supabase is not configured in this production deployment.');
   }
 
-  // Also broadcast to local relay (for dev server / cross-browser testing)
-  await localRelayApi.sendMessage(cleanRoomCode, record);
+  // Also broadcast to local relay (for dev server / cross-browser testing ONLY in local development)
+  if (isLocalEnvironment) {
+    await localRelayApi.sendMessage(cleanRoomCode, record);
+  }
 
   // Also broadcast via multi-tab peer hub
   localPeerHub.broadcast(cleanRoomCode, {
@@ -129,8 +140,8 @@ export async function fetchRoomMessages(
     }
   }
 
-  // If Supabase returned nothing or is unconfigured, check local relay
-  if (rawRecords.length === 0) {
+  // If Supabase returned nothing or is unconfigured, check local relay ONLY in local development
+  if (rawRecords.length === 0 && isLocalEnvironment) {
     const localMsgs = await localRelayApi.getMessages(cleanRoomCode);
     if (localMsgs && localMsgs.length > 0) {
       rawRecords = localMsgs;

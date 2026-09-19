@@ -1,5 +1,21 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
+const isBrowser = typeof window !== 'undefined';
+
+// Local environment: localhost, 127.0.0.1, ::1, or Vite dev server / Node test runner
+export const isLocalEnvironment =
+  !isBrowser ||
+  import.meta.env.DEV ||
+  Boolean(
+    isBrowser &&
+      (window.location.hostname === 'localhost' ||
+        window.location.hostname === '127.0.0.1' ||
+        window.location.hostname === '::1' ||
+        window.location.hostname.endsWith('.local'))
+  );
+
+export const isProductionDeployment = !isLocalEnvironment;
+
 const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string) || '';
 const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
 
@@ -12,7 +28,9 @@ export const isSupabaseConfigured = Boolean(
 
 export const supabaseHost = isSupabaseConfigured && supabaseUrl
   ? new URL(supabaseUrl).hostname
-  : 'LOCAL_DEV_RELAY';
+  : isLocalEnvironment
+  ? 'LOCAL_DEV_RELAY'
+  : 'UNCONFIGURED_PRODUCTION';
 
 export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey, {
@@ -87,6 +105,7 @@ export const localPeerHub = new LocalPeerChannelHub();
 // Local HTTP/SSE relay client for cross-browser (Normal + Incognito + cross-device) communication
 export const localRelayApi = {
   async isAvailable(): Promise<boolean> {
+    if (!isLocalEnvironment) return false;
     try {
       const res = await fetch(`${getRelayBaseUrl()}/api/nexus/health`);
       return res.ok;
@@ -96,6 +115,7 @@ export const localRelayApi = {
   },
 
   async createRoom(room: any): Promise<boolean> {
+    if (!isLocalEnvironment) return false;
     try {
       const res = await fetch(`${getRelayBaseUrl()}/api/nexus/rooms`, {
         method: 'POST',
@@ -109,6 +129,7 @@ export const localRelayApi = {
   },
 
   async getRoom(roomCode: string): Promise<any | null> {
+    if (!isLocalEnvironment) return null;
     try {
       const res = await fetch(`${getRelayBaseUrl()}/api/nexus/rooms/${encodeURIComponent(roomCode)}`);
       if (!res.ok) return null;
@@ -120,6 +141,7 @@ export const localRelayApi = {
   },
 
   async sendMessage(roomCode: string, message: any): Promise<boolean> {
+    if (!isLocalEnvironment) return false;
     try {
       const res = await fetch(`${getRelayBaseUrl()}/api/nexus/messages`, {
         method: 'POST',
@@ -133,6 +155,7 @@ export const localRelayApi = {
   },
 
   async getMessages(roomCode: string): Promise<any[]> {
+    if (!isLocalEnvironment) return [];
     try {
       const res = await fetch(`${getRelayBaseUrl()}/api/nexus/messages?room=${encodeURIComponent(roomCode)}`);
       if (!res.ok) return [];
@@ -144,6 +167,7 @@ export const localRelayApi = {
   },
 
   async registerMember(roomCode: string, member: any): Promise<boolean> {
+    if (!isLocalEnvironment) return false;
     try {
       const res = await fetch(`${getRelayBaseUrl()}/api/nexus/members`, {
         method: 'POST',
@@ -157,6 +181,7 @@ export const localRelayApi = {
   },
 
   async getMembers(roomCode: string): Promise<any[]> {
+    if (!isLocalEnvironment) return [];
     try {
       const res = await fetch(`${getRelayBaseUrl()}/api/nexus/members?room=${encodeURIComponent(roomCode)}`);
       if (!res.ok) return [];
@@ -173,7 +198,7 @@ export const localRelayApi = {
     onPeerEvent?: (event: any) => void
   ): () => void {
     let eventSource: EventSource | null = null;
-    if (typeof EventSource !== 'undefined') {
+    if (isLocalEnvironment && typeof EventSource !== 'undefined') {
       try {
         eventSource = new EventSource(`${getRelayBaseUrl()}/api/nexus/events?room=${encodeURIComponent(roomCode)}`);
         eventSource.onmessage = (event) => {

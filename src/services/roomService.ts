@@ -8,7 +8,14 @@
  * 4. Key Wrapping: Master key is encrypted inside envelopes using PBKDF2-derived KWKs.
  */
 
-import { supabase, isSupabaseConfigured, supabaseHost, localPeerHub, localRelayApi } from '../lib/supabaseClient';
+import {
+  supabase,
+  isSupabaseConfigured,
+  supabaseHost,
+  isLocalEnvironment,
+  localPeerHub,
+  localRelayApi,
+} from '../lib/supabaseClient';
 import { generateRoomKey } from '../crypto/encryption';
 import {
   generateSalt,
@@ -56,7 +63,7 @@ export interface ActiveSession {
 }
 
 export interface JoinDiagnostics {
-  transport: 'SUPABASE' | 'LOCAL_DEV_RELAY' | 'LOCAL_MOCK';
+  transport: 'SUPABASE' | 'LOCAL_DEV_RELAY' | 'LOCAL_MOCK' | 'UNCONFIGURED_PRODUCTION';
   supabaseConfigured: boolean;
   supabaseHost: string;
   roomCodePresent: boolean;
@@ -70,12 +77,18 @@ export interface JoinDiagnostics {
   supabaseError: string | null;
   verifierResult: 'SUCCESS' | 'FAIL' | 'PENDING';
   unwrapResult: 'SUCCESS' | 'FAIL' | 'PENDING';
-  errorStage: 'NONE' | 'ROOM_LOOKUP' | 'VERIFIER' | 'KEY_UNWRAP' | 'REGISTRATION' | 'NETWORK';
+  errorStage: 'NONE' | 'ROOM_LOOKUP' | 'VERIFIER' | 'KEY_UNWRAP' | 'REGISTRATION' | 'NETWORK' | 'CONFIG';
   errorMessage: string | null;
 }
 
+const defaultTransport: 'SUPABASE' | 'LOCAL_DEV_RELAY' | 'UNCONFIGURED_PRODUCTION' = isSupabaseConfigured
+  ? 'SUPABASE'
+  : isLocalEnvironment
+  ? 'LOCAL_DEV_RELAY'
+  : 'UNCONFIGURED_PRODUCTION';
+
 let latestDiagnostics: JoinDiagnostics = {
-  transport: isSupabaseConfigured ? 'SUPABASE' : 'LOCAL_DEV_RELAY',
+  transport: defaultTransport,
   supabaseConfigured: isSupabaseConfigured,
   supabaseHost: supabaseHost,
   roomCodePresent: false,
@@ -217,6 +230,13 @@ export async function createRoom(
     created_at: new Date().toISOString(),
   };
 
+  // Check configuration in production
+  if (!isSupabaseConfigured && !isLocalEnvironment) {
+    throw new Error(
+      'NEXUS CONFIGURATION ERROR // Supabase credentials (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY) are missing in this production deployment. Please configure environment variables in Netlify site settings and trigger a rebuild.'
+    );
+  }
+
   // 5. Persist to Supabase if configured
   if (isSupabaseConfigured && supabase) {
     const { data: existing, error: lookupError } = await supabase
@@ -243,10 +263,11 @@ export async function createRoom(
     ]);
 
     if (insertError) {
-      console.warn('Supabase room insert warning:', insertError.message);
+      console.error('Supabase room insert error:', insertError.message);
+      throw new Error(`DATABASE ERROR // Failed to create room in Supabase: ${insertError.message}`);
     }
 
-    await supabase.from('room_members').insert([
+    const { error: memberError } = await supabase.from('room_members').insert([
       {
         room_id: roomId,
         user_id: userId,
@@ -254,10 +275,16 @@ export async function createRoom(
         role: 'CREATOR',
       },
     ]);
+
+    if (memberError) {
+      console.warn('Supabase member insert warning:', memberError.message);
+    }
   }
 
-  // 6. Also persist to local dev relay API (for cross-browser Normal + Incognito dev testing)
-  await localRelayApi.createRoom(newRoom);
+  // 6. Also persist to local dev relay API ONLY in local development
+  if (isLocalEnvironment) {
+    await localRelayApi.createRoom(newRoom);
+  }
 
   // 7. Also save in localStorage and broadcast on localPeerHub
   const localRooms = getLocalRooms();
@@ -291,9 +318,15 @@ export async function joinRoom(
   const cleanRoomCode = roomCode.trim().toUpperCase();
   const cleanAccessCode = accessCode.trim();
 
+  const defaultJoinTransport: 'SUPABASE' | 'LOCAL_DEV_RELAY' | 'UNCONFIGURED_PRODUCTION' = isSupabaseConfigured
+    ? 'SUPABASE'
+    : isLocalEnvironment
+    ? 'LOCAL_DEV_RELAY'
+    : 'UNCONFIGURED_PRODUCTION';
+
   // Reset diagnostic state for this join attempt
   latestDiagnostics = {
-    transport: isSupabaseConfigured ? 'SUPABASE' : 'LOCAL_DEV_RELAY',
+    transport: defaultJoinTransport,
     supabaseConfigured: isSupabaseConfigured,
     supabaseHost: supabaseHost,
     roomCodePresent: Boolean(cleanRoomCode),
@@ -311,6 +344,17 @@ export async function joinRoom(
     errorMessage: null,
   };
 
+  // Enforce configuration in production
+  if (!isSupabaseConfigured && !isLocalEnvironment) {
+    latestDiagnostics.transport = 'UNCONFIGURED_PRODUCTION';
+    latestDiagnostics.errorStage = 'CONFIG';
+    latestDiagnostics.errorMessage =
+      'NEXUS CONFIGURATION ERROR // Supabase credentials (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY) are missing in this production deployment.';
+    throw new Error(
+      'NEXUS CONFIGURATION ERROR // Supabase credentials (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY) are missing in this production deployment. Please configure environment variables in Netlify site settings and trigger a rebuild.'
+    );
+  }
+
   checkRateLimit(cleanRoomCode);
 
   if (!cleanRoomCode) {
@@ -326,7 +370,7 @@ export async function joinRoom(
 
   let room: RoomRecord | null = null;
 
-  // STEP 1: Room Lookup (Multi-Tier: Supabase -> Local Dev Relay -> Local Store)
+  // STEP 1: Room Lookup (Multi-Tier: Supabase in all modes, Local Dev Relay only in local development)
   if (isSupabaseConfigured && supabase) {
     const { data, error } = await supabase
       .from('rooms')
@@ -359,8 +403,8 @@ export async function joinRoom(
     }
   }
 
-  // If not found in Supabase (or offline / local mode), check local dev server relay
-  if (!room) {
+  // If not found in Supabase (or running in local dev environment), check local dev server relay
+  if (!room && isLocalEnvironment) {
     const relayRoom = await localRelayApi.getRoom(cleanRoomCode);
     if (relayRoom) {
       room = relayRoom;
@@ -368,8 +412,8 @@ export async function joinRoom(
     }
   }
 
-  // Fallback to localStorage
-  if (!room) {
+  // Fallback to localStorage ONLY in local environment
+  if (!room && isLocalEnvironment) {
     const localRooms = getLocalRooms();
     if (localRooms[cleanRoomCode]) {
       room = localRooms[cleanRoomCode];
@@ -454,8 +498,10 @@ export async function joinRoom(
     );
   }
 
-  // Also register in local dev relay
-  await localRelayApi.registerMember(cleanRoomCode, memberRecord);
+  // Also register in local dev relay ONLY in local development
+  if (isLocalEnvironment) {
+    await localRelayApi.registerMember(cleanRoomCode, memberRecord);
+  }
 
   localPeerHub.broadcast(cleanRoomCode, {
     type: 'USER_JOINED',
